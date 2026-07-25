@@ -10,7 +10,6 @@ from html.parser import HTMLParser
 import re
 import logging
 import os
-from typing import Optional, Dict, Any
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -32,11 +31,11 @@ app.add_middleware(
 )
 
 # Mount static files
-try:
-    if os.path.exists("static"):
-        app.mount("/static", StaticFiles(directory="static"), name="static")
-except Exception as e:
-    logger.warning(f"Could not mount static files: {e}")
+if os.path.exists("static"):
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+    logger.info("Static files mounted successfully")
+else:
+    logger.warning("Static folder not found")
 
 class AuditRequest(BaseModel):
     url: str
@@ -49,22 +48,16 @@ class SimpleHTMLParser(HTMLParser):
         self.in_title = False
         self.meta_description = None
         self.h1_count = 0
-        self.in_h1 = False
         self.images_missing_alt = 0
         self.text_content = []
-        self.current_tag = None
-        self.current_attrs = {}
         
     def handle_starttag(self, tag, attrs):
         attrs_dict = dict(attrs)
-        self.current_tag = tag
-        self.current_attrs = attrs_dict
         
         if tag == 'title':
             self.in_title = True
         elif tag == 'h1':
             self.h1_count += 1
-            self.in_h1 = True
         elif tag == 'img':
             alt = attrs_dict.get('alt', '')
             if not alt or alt.strip() == '':
@@ -76,8 +69,6 @@ class SimpleHTMLParser(HTMLParser):
     def handle_endtag(self, tag):
         if tag == 'title':
             self.in_title = False
-        elif tag == 'h1':
-            self.in_h1 = False
     
     def handle_data(self, data):
         if self.in_title and self.title is None:
@@ -97,9 +88,12 @@ async def root():
     try:
         if os.path.exists("static/index.html"):
             return FileResponse("static/index.html")
+        elif os.path.exists("index.html"):
+            return FileResponse("index.html")
         else:
             return {"message": "Page Pulse is running!", "status": "ok"}
     except Exception as e:
+        logger.error(f"Error serving index: {e}")
         return {"message": "Page Pulse is running!", "status": "ok"}
 
 @app.get("/health")
