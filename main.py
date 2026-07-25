@@ -1,20 +1,26 @@
 # main.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, HttpUrl
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 import httpx
 import time
-from bs4 import BeautifulSoup
+from html.parser import HTMLParser
 import re
-from typing import Optional
 import logging
+import os
+from typing import Optional, Dict, Any
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Page Pulse API", version="1.0.0")
+app = FastAPI(
+    title="Page Pulse API",
+    version="1.0.0",
+    description="URL auditing tool for SEO and performance metrics"
+)
 
 # CORS middleware
 app.add_middleware(
@@ -25,54 +31,110 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve static files (frontend)
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Mount static files
+try:
+    if os.path.exists("static"):
+        app.mount("/static", StaticFiles(directory="static"), name="static")
+except Exception as e:
+    logger.warning(f"Could not mount static files: {e}")
 
 class AuditRequest(BaseModel):
-    url: HttpUrl
-
-class AuditResponse(BaseModel):
-    success: bool
     url: str
-    status: Optional[int] = None
-    status_text: Optional[str] = None
-    response_time: Optional[str] = None
-    content_type: Optional[str] = None
-    page_title: Optional[str] = None
-    meta_description: Optional[str] = None
-    h1_count: Optional[int] = None
-    images_missing_alt: Optional[int] = None
-    word_count: Optional[int] = None
-    timestamp: Optional[str] = None
-    error: Optional[str] = None
+
+class SimpleHTMLParser(HTMLParser):
+    """Custom HTML parser to extract needed data without lxml"""
+    def __init__(self):
+        super().__init__()
+        self.title = None
+        self.in_title = False
+        self.meta_description = None
+        self.h1_count = 0
+        self.in_h1 = False
+        self.images_missing_alt = 0
+        self.text_content = []
+        self.current_tag = None
+        self.current_attrs = {}
+        
+    def handle_starttag(self, tag, attrs):
+        attrs_dict = dict(attrs)
+        self.current_tag = tag
+        self.current_attrs = attrs_dict
+        
+        if tag == 'title':
+            self.in_title = True
+        elif tag == 'h1':
+            self.h1_count += 1
+            self.in_h1 = True
+        elif tag == 'img':
+            alt = attrs_dict.get('alt', '')
+            if not alt or alt.strip() == '':
+                self.images_missing_alt += 1
+        elif tag == 'meta':
+            if attrs_dict.get('name') == 'description':
+                self.meta_description = attrs_dict.get('content', '').strip()
+    
+    def handle_endtag(self, tag):
+        if tag == 'title':
+            self.in_title = False
+        elif tag == 'h1':
+            self.in_h1 = False
+    
+    def handle_data(self, data):
+        if self.in_title and self.title is None:
+            self.title = data.strip()
+        if data.strip():
+            self.text_content.append(data.strip())
+    
+    def get_word_count(self):
+        """Calculate approximate word count from text content"""
+        text = ' '.join(self.text_content)
+        words = re.findall(r'\b\w+\b', text)
+        return len(words)
 
 @app.get("/")
 async def root():
     """Serve the frontend"""
-    from fastapi.responses import FileResponse
-    return FileResponse("static/index.html")
+    try:
+        if os.path.exists("static/index.html"):
+            return FileResponse("static/index.html")
+        else:
+            return {"message": "Page Pulse is running!", "status": "ok"}
+    except Exception as e:
+        return {"message": "Page Pulse is running!", "status": "ok"}
 
-@app.post("/api/audit", response_model=AuditResponse)
+@app.get("/health")
+async def health():
+    """Health check endpoint for Render"""
+    return {
+        "status": "healthy",
+        "service": "Page Pulse",
+        "version": "1.0.0",
+        "python_version": os.getenv("PYTHON_VERSION", "3.11"),
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S %Z")
+    }
+
+@app.post("/api/audit")
 async def audit_url(request: AuditRequest):
     """
     Audit a URL and return SEO and performance metrics
     """
-    url = str(request.url)
+    url = request.url.strip()
     
     # Validate URL format
     if not url.startswith(('http://', 'https://')):
-        return AuditResponse(
-            success=False,
-            url=url,
-            error="URL must start with http:// or https://"
-        )
-
+        return {
+            'success': False,
+            'error': 'URL must start with http:// or https://'
+        }
+    
     try:
         start_time = time.time()
         
-        # Make HTTP request with timeout
+        # Get timeout from environment or use default
+        timeout = float(os.getenv("TIMEOUT", "15.0"))
+        
         async with httpx.AsyncClient(
-            timeout=10.0,
+            timeout=timeout,
             follow_redirects=True,
             headers={
                 'User-Agent': 'PagePulse-AuditBot/1.0',
@@ -81,92 +143,63 @@ async def audit_url(request: AuditRequest):
         ) as client:
             response = await client.get(url)
             
-        response_time = (time.time() - start_time) * 1000  # Convert to ms
+        response_time = (time.time() - start_time) * 1000
         
         # Check if response is HTML
         content_type = response.headers.get('content-type', '')
         if 'text/html' not in content_type:
-            return AuditResponse(
-                success=False,
-                url=url,
-                status=response.status_code,
-                status_text=response.reason_phrase,
-                content_type=content_type,
-                error="URL does not return HTML content"
-            )
+            return {
+                'success': False,
+                'url': url,
+                'status': response.status_code,
+                'content_type': content_type,
+                'error': 'URL does not return HTML content'
+            }
         
-        # Parse HTML
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # Parse HTML using custom parser (no lxml!)
+        parser = SimpleHTMLParser()
+        parser.feed(response.text)
         
-        # Extract page title
-        title_tag = soup.find('title')
-        page_title = title_tag.get_text().strip() if title_tag else "No title found"
-        
-        # Extract meta description
-        meta_tag = soup.find('meta', attrs={'name': 'description'})
-        meta_description = meta_tag.get('content', '').strip() if meta_tag else "No meta description"
-        
-        # Count H1 tags
-        h1_count = len(soup.find_all('h1'))
-        
-        # Count images missing alt text
-        images = soup.find_all('img')
-        images_missing_alt = sum(1 for img in images if not img.get('alt') or img.get('alt') == '')
-        
-        # Approximate word count (exclude HTML tags)
-        text = soup.get_text()
-        words = re.findall(r'\b\w+\b', text)
-        word_count = len(words)
-        
-        return AuditResponse(
-            success=True,
-            url=url,
-            status=response.status_code,
-            status_text=response.reason_phrase,
-            response_time=f"{response_time:.0f}ms",
-            content_type=content_type,
-            page_title=page_title,
-            meta_description=meta_description,
-            h1_count=h1_count,
-            images_missing_alt=images_missing_alt,
-            word_count=word_count,
-            timestamp=time.strftime("%Y-%m-%d %H:%M:%S")
-        )
+        return {
+            'success': True,
+            'url': url,
+            'status': response.status_code,
+            'status_text': response.reason_phrase or "OK",
+            'response_time': f"{response_time:.0f}ms",
+            'content_type': content_type,
+            'page_title': parser.title or "No title found",
+            'meta_description': parser.meta_description or "No meta description",
+            'h1_count': parser.h1_count,
+            'images_missing_alt': parser.images_missing_alt,
+            'word_count': parser.get_word_count(),
+            'timestamp': time.strftime("%Y-%m-%d %H:%M:%S %Z")
+        }
         
     except httpx.TimeoutException:
         logger.error(f"Timeout for URL: {url}")
-        return AuditResponse(
-            success=False,
-            url=url,
-            error="Request timed out. The server took too long to respond."
-        )
+        return {
+            'success': False,
+            'url': url,
+            'error': 'Request timed out. The server took too long to respond.'
+        }
     
     except httpx.ConnectError:
         logger.error(f"Connection error for URL: {url}")
-        return AuditResponse(
-            success=False,
-            url=url,
-            error="Could not connect to the server. Please check the URL."
-        )
-    
-    except httpx.HTTPStatusError as e:
-        logger.error(f"HTTP error for URL {url}: {e.response.status_code}")
-        return AuditResponse(
-            success=False,
-            url=url,
-            status=e.response.status_code,
-            status_text=e.response.reason_phrase,
-            error=f"Server responded with status {e.response.status_code}"
-        )
+        return {
+            'success': False,
+            'url': url,
+            'error': 'Could not connect to the server. Please check the URL.'
+        }
     
     except Exception as e:
         logger.error(f"Unexpected error for URL {url}: {str(e)}")
-        return AuditResponse(
-            success=False,
-            url=url,
-            error="An unexpected error occurred. Please try again."
-        )
+        return {
+            'success': False,
+            'url': url,
+            'error': f'Error: {str(e)}'
+        }
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

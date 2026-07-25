@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Page Pulse - URL Auditor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 800px;
+            width: 100%;
+        }
+        h1 {
+            color: #2d3748;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #718096;
+            margin-bottom: 30px;
+            font-size: 1.1rem;
+        }
+        .input-group {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+        input[type="url"] {
+            flex: 1;
+            padding: 14px 20px;
+            border: 2px solid #e2e8f0;
+            border-radius: 12px;
+            font-size: 1rem;
+            transition: all 0.3s;
+        }
+        input[type="url"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        button {
+            padding: 14px 32px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            white-space: nowrap;
+        }
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        #loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+            color: #718096;
+        }
+        .spinner {
+            border: 3px solid #e2e8f0;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        #report {
+            margin-top: 30px;
+            display: none;
+        }
+        .error-box {
+            background: #fed7d7;
+            color: #9b2c2c;
+            padding: 16px;
+            border-radius: 12px;
+            margin-top: 20px;
+            border-left: 4px solid #e53e3e;
+        }
+        .report-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-top: 20px;
+        }
+        .stat-card {
+            background: #f7fafc;
+            padding: 16px;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
+        }
+        .stat-label {
+            font-size: 0.8rem;
+            color: #718096;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #2d3748;
+            margin-top: 4px;
+            word-break: break-all;
+        }
+        .stat-value.status-good { color: #38a169; }
+        .stat-value.status-bad { color: #e53e3e; }
+        .stat-value.status-warning { color: #d69e2e; }
+        .report-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 16px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+        .report-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: #2d3748;
+        }
+        .timestamp {
+            font-size: 0.8rem;
+            color: #a0aec0;
+        }
+        .url-display {
+            color: #4a5568;
+            font-size: 0.9rem;
+            margin-top: 4px;
+            word-break: break-all;
+        }
+        @media (max-width: 640px) {
+            .container { padding: 20px; }
+            h1 { font-size: 1.8rem; }
+            .input-group { flex-direction: column; }
+            button { width: 100%; }
+            .report-grid { grid-template-columns: 1fr 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔍 Page Pulse</h1>
+        <p class="subtitle">Audit any URL for SEO and performance metrics</p>
+        
+        <div class="input-group">
+            <input type="url" id="urlInput" placeholder="https://example.com" required>
+            <button id="auditBtn">Audit URL</button>
+        </div>
+
+        <div id="loading">
+            <div class="spinner"></div>
+            <p>Analyzing page...</p>
+        </div>
+
+        <div id="report"></div>
+    </div>
+
+    <script>
+        const urlInput = document.getElementById('urlInput');
+        const auditBtn = document.getElementById('auditBtn');
+        const loading = document.getElementById('loading');
+        const reportDiv = document.getElementById('report');
+
+        auditBtn.addEventListener('click', auditUrl);
+        urlInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') auditUrl();
+        });
+
+        async function auditUrl() {
+            const url = urlInput.value.trim();
+            if (!url) {
+                showError('Please enter a URL');
+                return;
+            }
+
+            try { new URL(url); } catch {
+                showError('Invalid URL format. Please include http:// or https://');
+                return;
+            }
+
+            auditBtn.disabled = true;
+            loading.style.display = 'block';
+            reportDiv.style.display = 'none';
+            reportDiv.innerHTML = '';
+
+            try {
+                const response = await fetch('/api/audit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok || !data.success) {
+                    showError(data.error || 'Failed to audit URL');
+                    return;
+                }
+
+                renderReport(data);
+
+            } catch (error) {
+                showError('Network error. Please check your connection and try again.');
+                console.error('Frontend error:', error);
+            } finally {
+                auditBtn.disabled = false;
+                loading.style.display = 'none';
+            }
+        }
+
+        function showError(message) {
+            reportDiv.style.display = 'block';
+            reportDiv.innerHTML = `
+                <div class="error-box">
+                    <strong>⚠️ Error:</strong> ${message}
+                </div>
+            `;
+        }
+
+        function renderReport(data) {
+            const statusClass = data.status >= 200 && data.status < 300 ? 'status-good' : 'status-bad';
+            const wordCountClass = data.word_count > 0 ? '' : 'status-warning';
+
+            reportDiv.style.display = 'block';
+            reportDiv.innerHTML = `
+                <div class="report-header">
+                    <div>
+                        <div class="report-title">📊 Audit Report</div>
+                        <div class="url-display">${escapeHtml(data.url)}</div>
+                    </div>
+                    <div class="timestamp">${data.timestamp}</div>
+                </div>
+
+                <div class="report-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">HTTP Status</div>
+                        <div class="stat-value ${statusClass}">${data.status} ${data.status_text || ''}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Response Time</div>
+                        <div class="stat-value">${data.response_time}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Page Title</div>
+                        <div class="stat-value" style="font-size:1rem;">${escapeHtml(data.page_title)}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Meta Description</div>
+                        <div class="stat-value" style="font-size:1rem;">${escapeHtml(data.meta_description)}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">H1 Tags</div>
+                        <div class="stat-value">${data.h1_count}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Images Missing Alt</div>
+                        <div class="stat-value ${data.images_missing_alt > 0 ? 'status-warning' : 'status-good'}">
+                            ${data.images_missing_alt}
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Word Count</div>
+                        <div class="stat-value ${wordCountClass}">${data.word_count.toLocaleString()}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Content Type</div>
+                        <div class="stat-value" style="font-size:0.9rem;">${data.content_type}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
